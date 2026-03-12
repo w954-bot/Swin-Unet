@@ -84,12 +84,13 @@ def trainer_synapse(args, model, snapshot_path):
             batch_dice_loss += loss_dice.item()
             batch_ce_loss += loss_ce.item()
             if iter_num % 20 == 0:
-                image = image_batch[1, 0:1, :, :]
-                image = (image - image.min()) / (image.max() - image.min())
+                vis_idx = min(1, image_batch.size(0) - 1)
+                image = image_batch[vis_idx, 0:1, :, :]
+                image = (image - image.min()) / (image.max() - image.min() + 1e-8)
                 writer.add_image('train/Image', image, iter_num)
                 outputs = torch.argmax(torch.softmax(outputs, dim=1), dim=1, keepdim=True)
-                writer.add_image('train/Prediction', outputs[1, ...] * 50, iter_num)
-                labs = label_batch[1, ...].unsqueeze(0) * 50
+                writer.add_image('train/Prediction', outputs[vis_idx, ...] * 50, iter_num)
+                labs = label_batch[vis_idx, ...].unsqueeze(0) * 50
                 writer.add_image('train/GroundTruth', labs, iter_num)
         batch_ce_loss /= len(train_loader)
         batch_dice_loss /= len(train_loader)
