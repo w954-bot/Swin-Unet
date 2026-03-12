@@ -58,20 +58,26 @@ class Synapse_dataset(Dataset):
         return len(self.sample_list)
 
     def __getitem__(self, idx):
-        if self.split in ["train", "val"] or self.sample_list[idx].strip('\n').split(",")[0].endswith(".npz"):
-            slice_name = self.sample_list[idx].strip('\n').split(",")[0]
-            if slice_name.endswith(".npz"):
-                data_path = os.path.join(self.data_dir, slice_name)
-            else:
-                data_path = os.path.join(self.data_dir, slice_name + '.npz')
-            data = np.load(data_path)
+        sample_name = self.sample_list[idx].strip('\n').split(",")[0]
+
+        # default: read npz (including test split)
+        npz_path = os.path.join(self.data_dir, sample_name if sample_name.endswith(".npz") else sample_name + '.npz')
+        if self.split in ["train", "val"] or os.path.exists(npz_path):
+            data = np.load(npz_path)
             try:
                 image, label = data['image'], data['label']
             except:
                 image, label = data['data'], data['seg']
+
+            # test path expects an extra singleton channel before volume depth
+            if self.split not in ["train", "val"]:
+                if image.ndim == 3:
+                    image = np.expand_dims(image, axis=0)
+                if label.ndim == 3:
+                    label = np.expand_dims(label, axis=0)
         else:
-            vol_name = self.sample_list[idx].strip('\n')
-            filepath = self.data_dir + "/{}.npy.h5".format(vol_name)
+            # backward compatibility: fallback to legacy h5 test volume
+            filepath = self.data_dir + "/{}.npy.h5".format(sample_name)
             data = h5py.File(filepath)
             image, label = data['image'][:], data['label'][:]
 
