@@ -21,7 +21,10 @@ def random_rot_flip(image, label):
 
 def random_rotate(image, label):
     angle = np.random.randint(-20, 20)
-    image = ndimage.rotate(image, angle, order=0, reshape=False)
+    if image.ndim == 3:
+        image = ndimage.rotate(image, angle, axes=(0, 1), order=1, reshape=False)
+    else:
+        image = ndimage.rotate(image, angle, order=1, reshape=False)
     label = ndimage.rotate(label, angle, order=0, reshape=False)
     return image, label
 
@@ -37,11 +40,17 @@ class RandomGenerator(object):
             image, label = random_rot_flip(image, label)
         elif random.random() > 0.5:
             image, label = random_rotate(image, label)
-        x, y = image.shape
+        x, y = image.shape[:2]
         if x != self.output_size[0] or y != self.output_size[1]:
-            image = zoom(image, (self.output_size[0] / x, self.output_size[1] / y), order=3)  # why not 3?
+            if image.ndim == 3:
+                image = zoom(image, (self.output_size[0] / x, self.output_size[1] / y, 1), order=3)
+            else:
+                image = zoom(image, (self.output_size[0] / x, self.output_size[1] / y), order=3)
             label = zoom(label, (self.output_size[0] / x, self.output_size[1] / y), order=0)
-        image = torch.from_numpy(image.astype(np.float32)).unsqueeze(0)
+        if image.ndim == 2:
+            image = torch.from_numpy(image.astype(np.float32)).unsqueeze(0)
+        else:
+            image = torch.from_numpy(image.astype(np.float32)).permute(2, 0, 1)
         label = torch.from_numpy(label.astype(np.float32))
         sample = {'image': image, 'label': label.long()}
         return sample

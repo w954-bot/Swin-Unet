@@ -42,6 +42,31 @@ class Mlp(nn.Module):
         return x
 
 
+class TokenConvBlock(nn.Module):
+    """Convolution branch block on token features (B, L, C) <-> (B, C, H, W)."""
+
+    def __init__(self, dim):
+        super().__init__()
+        self.block = nn.Sequential(
+            nn.Conv2d(dim, dim, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(dim),
+            nn.GELU(),
+            nn.Conv2d(dim, dim, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(dim),
+            nn.GELU(),
+        )
+
+    def forward(self, x, input_resolution):
+        h, w = input_resolution
+        b, l, c = x.shape
+        if l != h * w:
+            raise ValueError(f"Token length {l} does not match resolution {h}x{w}")
+        x_2d = x.view(b, h, w, c).permute(0, 3, 1, 2).contiguous()
+        x_2d = self.block(x_2d)
+        x = x_2d.permute(0, 2, 3, 1).contiguous().view(b, l, c)
+        return x
+
+
 def window_partition(x, window_size):
     """
     Args:
@@ -648,10 +673,15 @@ class SwinTransformerSys(nn.Module):
 
         # build encoder and bottleneck layers
         self.layers = nn.ModuleList()
+        self.stage_resolutions = []
+        self.conv_parallel_layers = nn.ModuleList()
+        self.skip_fusion_layers = nn.ModuleList()
         for i_layer in range(self.num_layers):
-            layer = BasicLayer(dim=int(embed_dim * 2 ** i_layer),
-                               input_resolution=(patches_resolution[0] // (2 ** i_layer),
-                                                 patches_resolution[1] // (2 ** i_layer)),
+            stage_dim = int(embed_dim * 2 ** i_layer)
+            stage_resolution = (patches_resolution[0] // (2 ** i_layer),
+                                patches_resolution[1] // (2 ** i_layer))
+            layer = BasicLayer(dim=stage_dim,
+                               input_resolution=stage_resolution,
                                depth=depths[i_layer],
                                num_heads=num_heads[i_layer],
                                window_size=window_size,
@@ -663,6 +693,9 @@ class SwinTransformerSys(nn.Module):
                                downsample=PatchMerging if (i_layer < self.num_layers - 1) else None,
                                use_checkpoint=use_checkpoint)
             self.layers.append(layer)
+            self.stage_resolutions.append(stage_resolution)
+            self.conv_parallel_layers.append(TokenConvBlock(stage_dim))
+            self.skip_fusion_layers.append(nn.Linear(stage_dim * 2, stage_dim))
 
         # build decoder layers
         self.layers_up = nn.ModuleList()
@@ -731,8 +764,10 @@ class SwinTransformerSys(nn.Module):
         x = self.pos_drop(x)
         x_downsample = []
 
-        for layer in self.layers:
-            x_downsample.append(x)
+        for i_layer, layer in enumerate(self.layers):
+            conv_feat = self.conv_parallel_layers[i_layer](x, self.stage_resolutions[i_layer])
+            fused_skip = self.skip_fusion_layers[i_layer](torch.cat([x, conv_feat], dim=-1))
+            x_downsample.append(fused_skip)
             x = layer(x)
 
         x = self.norm(x)  # B L C
