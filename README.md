@@ -18,6 +18,8 @@
 
 - Train
 
+> Note: training now expects both `train.txt` and `val.txt` under `--list_dir` (for example `lists/lists_Synapse/`) and uses `val.txt` as an independent validation split.
+
 ```bash
 sh train.sh 
 # or 
