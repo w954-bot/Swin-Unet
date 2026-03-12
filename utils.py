@@ -59,7 +59,28 @@ def calculate_metric_percase(pred, gt):
 
 
 def test_single_volume(image, label, net, classes, patch_size=[256, 256], test_save_path=None, case=None, z_spacing=1):
-    image, label = image.squeeze(0).cpu().detach().numpy().squeeze(0), label.squeeze(0).cpu().detach().numpy().squeeze(0)
+    image = image.cpu().detach().numpy()
+    label = label.cpu().detach().numpy()
+
+    while image.ndim > 0 and image.shape[0] == 1:
+        image = np.squeeze(image, axis=0)
+    while label.ndim > 0 and label.shape[0] == 1:
+        label = np.squeeze(label, axis=0)
+
+    # If image is HWC/CHW (channel axis size is small), convert to 2D to match label.
+    if image.ndim == 3 and label.ndim == 2:
+        if image.shape[0] <= 4 and image.shape[1:] == label.shape:
+            image = image[0]
+        elif image.shape[-1] <= 4 and image.shape[:2] == label.shape:
+            image = image[..., 0]
+
+    # If one of image axes is a small channel axis but label is volumetric, drop channel axis.
+    if image.ndim == 3 and label.ndim == 3 and image.shape != label.shape:
+        if image.shape[0] <= 4 and image.shape[1:] == label.shape:
+            image = image[0]
+        elif image.shape[-1] <= 4 and image.shape[:2] == label.shape[:2]:
+            image = image[..., 0]
+
     if len(image.shape) == 3:
         prediction = np.zeros_like(label)
         for ind in range(image.shape[0]):
@@ -79,12 +100,21 @@ def test_single_volume(image, label, net, classes, patch_size=[256, 256], test_s
                     pred = out
                 prediction[ind] = pred
     else:
-        input = torch.from_numpy(image).unsqueeze(
-            0).unsqueeze(0).float().cuda()
+        x, y = image.shape[0], image.shape[1]
+        if x != patch_size[0] or y != patch_size[1]:
+            image_input = zoom(image, (patch_size[0] / x, patch_size[1] / y), order=3)
+        else:
+            image_input = image
+
+        input = torch.from_numpy(image_input).unsqueeze(0).unsqueeze(0).float().cuda()
         net.eval()
         with torch.no_grad():
             out = torch.argmax(torch.softmax(net(input), dim=1), dim=1).squeeze(0)
-            prediction = out.cpu().detach().numpy()
+            out = out.cpu().detach().numpy()
+            if x != patch_size[0] or y != patch_size[1]:
+                prediction = zoom(out, (x / patch_size[0], y / patch_size[1]), order=0)
+            else:
+                prediction = out
     metric_list = []
     for i in range(1, classes):
         metric_list.append(calculate_metric_percase(prediction == i, label == i))
