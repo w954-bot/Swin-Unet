@@ -47,6 +47,8 @@ def trainer_synapse(args, model, snapshot_path):
     model.train()
     ce_loss = CrossEntropyLoss()
     dice_loss = DiceLoss(num_classes)
+    ce_weight = 0.5
+    dice_weight = 0.5
     optimizer = optim.SGD(model.parameters(), lr=base_lr, momentum=0.9, weight_decay=0.0001)
     writer = SummaryWriter(snapshot_path + '/log')
     iter_num = 0
@@ -66,7 +68,7 @@ def trainer_synapse(args, model, snapshot_path):
             outputs = model(image_batch)
             loss_ce = ce_loss(outputs, label_batch[:].long())
             loss_dice = dice_loss(outputs, label_batch, softmax=True)
-            loss = 0.4 * loss_ce + 0.6 * loss_dice
+            loss = ce_weight * loss_ce + dice_weight * loss_dice
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
@@ -94,7 +96,10 @@ def trainer_synapse(args, model, snapshot_path):
                 writer.add_image('train/GroundTruth', labs, iter_num)
         batch_ce_loss /= len(train_loader)
         batch_dice_loss /= len(train_loader)
-        batch_loss = 0.4 * batch_ce_loss + 0.6 * batch_dice_loss
+        batch_loss = ce_weight * batch_ce_loss + dice_weight * batch_dice_loss
+        writer.add_scalar('train/epoch_loss_total', batch_loss, epoch_num + 1)
+        writer.add_scalar('train/epoch_loss_ce', batch_ce_loss, epoch_num + 1)
+        writer.add_scalar('train/epoch_loss_dice', batch_dice_loss, epoch_num + 1)
         logging.info('Train epoch: %d : loss : %f, loss_ce: %f, loss_dice: %f' % (
             epoch_num, batch_loss, batch_ce_loss, batch_dice_loss))
         if (epoch_num + 1) % args.eval_interval == 0:
@@ -114,9 +119,14 @@ def trainer_synapse(args, model, snapshot_path):
 
                 batch_ce_loss /= len(val_loader)
                 batch_dice_loss /= len(val_loader)
-                batch_loss = 0.4 * batch_ce_loss + 0.6 * batch_dice_loss
-                logging.info('Val epoch: %d : loss : %f, loss_ce: %f, loss_dice: %f' % (
-                    epoch_num, batch_loss, batch_ce_loss, batch_dice_loss))
+                batch_loss = ce_weight * batch_ce_loss + dice_weight * batch_dice_loss
+                writer.add_scalar('val/epoch_loss_total', batch_loss, epoch_num + 1)
+                writer.add_scalar('val/epoch_loss_ce', batch_ce_loss, epoch_num + 1)
+                writer.add_scalar('val/epoch_loss_dice', batch_dice_loss, epoch_num + 1)
+                val_dice = 1 - batch_dice_loss
+                writer.add_scalar('val/epoch_dice', val_dice, epoch_num + 1)
+                logging.info('Val epoch: %d : loss : %f, loss_ce: %f, loss_dice: %f, dice: %f' % (
+                    epoch_num, batch_loss, batch_ce_loss, batch_dice_loss, val_dice))
                 if batch_loss < best_loss:
                     save_mode_path = os.path.join(snapshot_path, 'best_model.pth')
                     torch.save(model.state_dict(), save_mode_path)
