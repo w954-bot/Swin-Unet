@@ -15,8 +15,29 @@ from tqdm import tqdm
 from utils import DiceLoss
 
 
+def foreground_only_dice_stats(logits, labels, num_classes, eps=1e-5):
+    """Return (dice_sum, dice_count) over foreground classes present in GT only."""
+    pred = torch.argmax(torch.softmax(logits, dim=1), dim=1)
+    dice_sum = 0.0
+    dice_count = 0
+
+    for b in range(labels.size(0)):
+        for c in range(1, num_classes):
+            gt_c = (labels[b] == c)
+            gt_sum = gt_c.sum().item()
+            if gt_sum == 0:
+                continue
+            pred_c = (pred[b] == c)
+            inter = (pred_c & gt_c).sum().item()
+            pred_sum = pred_c.sum().item()
+            dice = (2.0 * inter + eps) / (pred_sum + gt_sum + eps)
+            dice_sum += dice
+            dice_count += 1
+
+    return dice_sum, dice_count
+
 def trainer_synapse(args, model, snapshot_path):
-    from datasets.dataset_synapse import Synapse_dataset, RandomGenerator
+    from datasets.dataset_synapse import Synapse_dataset, RandomGenerator, ValGenerator
     logging.basicConfig(filename=snapshot_path + "/log.txt", level=logging.INFO,
                         format='[%(asctime)s.%(msecs)03d] %(message)s', datefmt='%H:%M:%S')
     logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
@@ -30,7 +51,7 @@ def trainer_synapse(args, model, snapshot_path):
                                    [RandomGenerator(output_size=[args.img_size, args.img_size])]))
     db_val = Synapse_dataset(base_dir=args.root_path, list_dir=args.list_dir, split="val",
                              transform=transforms.Compose(
-                                 [RandomGenerator(output_size=[args.img_size, args.img_size])]))
+                                 [ValGenerator(output_size=[args.img_size, args.img_size])]))
     print("The length of train set is: {}".format(len(db_train)))
 
     def worker_init_fn(worker_id):
@@ -55,6 +76,7 @@ def trainer_synapse(args, model, snapshot_path):
     logging.info("{} iterations per epoch. {} max iterations ".format(len(train_loader), max_iterations))
     iterator = tqdm(range(max_epoch), ncols=70)
     best_loss = 10e10
+    best_fg_dice = -1.0
     for epoch_num in iterator:
         model.train()
         batch_dice_loss = 0
@@ -102,6 +124,8 @@ def trainer_synapse(args, model, snapshot_path):
             batch_dice_loss = 0
             batch_ce_loss = 0
             with torch.no_grad():
+                fg_dice_sum = 0.0
+                fg_dice_count = 0
                 for i_batch, sampled_batch in tqdm(enumerate(val_loader), desc=f"Val: {epoch_num}",
                                                    total=len(val_loader), leave=False):
                     image_batch, label_batch = sampled_batch['image'], sampled_batch['label']
@@ -112,15 +136,20 @@ def trainer_synapse(args, model, snapshot_path):
                     batch_dice_loss += loss_dice.item()
                     batch_ce_loss += loss_ce.item()
 
+                    dice_sum_i, dice_count_i = foreground_only_dice_stats(outputs, label_batch, num_classes)
+                    fg_dice_sum += dice_sum_i
+                    fg_dice_count += dice_count_i
+
                 batch_ce_loss /= len(val_loader)
                 batch_dice_loss /= len(val_loader)
                 batch_loss = 0.4 * batch_ce_loss + 0.6 * batch_dice_loss
-                logging.info('Val epoch: %d : loss : %f, loss_ce: %f, loss_dice: %f' % (
-                    epoch_num, batch_loss, batch_ce_loss, batch_dice_loss))
-                if batch_loss < best_loss:
+                val_fg_dice = fg_dice_sum / fg_dice_count if fg_dice_count > 0 else 0.0
+                logging.info('Val epoch: %d : loss : %f, loss_ce: %f, loss_dice: %f, fg_mean_dice: %f, fg_count: %d' % (
+                    epoch_num, batch_loss, batch_ce_loss, batch_dice_loss, val_fg_dice, fg_dice_count))
+                if val_fg_dice > best_fg_dice:
                     save_mode_path = os.path.join(snapshot_path, 'best_model.pth')
                     torch.save(model.state_dict(), save_mode_path)
-                    best_loss = batch_loss
+                    best_fg_dice = val_fg_dice
                 else:
                     save_mode_path = os.path.join(snapshot_path, 'last_model.pth')
                     torch.save(model.state_dict(), save_mode_path)
