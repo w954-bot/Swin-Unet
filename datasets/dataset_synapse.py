@@ -29,6 +29,91 @@ def random_rotate(image, label):
     return image, label
 
 
+def random_affine(image, label, max_rotate=15.0, max_scale=0.1, max_shift_ratio=0.05):
+    h, w = image.shape[:2]
+    angle = np.deg2rad(np.random.uniform(-max_rotate, max_rotate))
+    scale = np.random.uniform(1.0 - max_scale, 1.0 + max_scale)
+    tx = np.random.uniform(-max_shift_ratio, max_shift_ratio) * w
+    ty = np.random.uniform(-max_shift_ratio, max_shift_ratio) * h
+
+    cos_a, sin_a = np.cos(angle), np.sin(angle)
+    transform = np.array([[scale * cos_a, -scale * sin_a], [scale * sin_a, scale * cos_a]])
+
+    center = np.array([h / 2.0, w / 2.0])
+    offset = center - transform @ center - np.array([ty, tx])
+
+    if image.ndim == 3:
+        out = np.empty_like(image)
+        for c in range(image.shape[-1]):
+            out[..., c] = ndimage.affine_transform(
+                image[..., c], transform, offset=offset, order=1, mode="nearest"
+            )
+        image = out
+    else:
+        image = ndimage.affine_transform(image, transform, offset=offset, order=1, mode="nearest")
+
+    label = ndimage.affine_transform(label, transform, offset=offset, order=0, mode="nearest")
+    return image, label
+
+
+def random_intensity(image, brightness=0.15, contrast=0.15, gamma_range=(0.8, 1.2), noise_std=0.02):
+    image = image.astype(np.float32)
+    mean = image.mean(axis=(0, 1), keepdims=True) if image.ndim == 3 else image.mean()
+    image = (image - mean) * np.random.uniform(1.0 - contrast, 1.0 + contrast) + mean
+    image = image + np.random.uniform(-brightness, brightness)
+
+    im_min, im_max = image.min(), image.max()
+    if im_max > im_min:
+        image = (image - im_min) / (im_max - im_min)
+        image = np.power(image, np.random.uniform(gamma_range[0], gamma_range[1]))
+        image = image * (im_max - im_min) + im_min
+
+    if np.random.random() < 0.5:
+        image = image + np.random.normal(0.0, noise_std, size=image.shape).astype(np.float32)
+
+    return image
+
+
+def random_specular_reflection(image, p=0.25, max_spots=3):
+    if image.ndim != 3 or image.shape[-1] < 3 or np.random.random() > p:
+        return image
+
+    h, w, _ = image.shape
+    out = image.astype(np.float32).copy()
+
+    yy, xx = np.ogrid[:h, :w]
+    num_spots = np.random.randint(1, max_spots + 1)
+    for _ in range(num_spots):
+        cx = np.random.randint(0, w)
+        cy = np.random.randint(0, h)
+        rx = np.random.randint(max(4, w // 40), max(8, w // 12))
+        ry = np.random.randint(max(4, h // 40), max(8, h // 12))
+
+        mask = ((xx - cx) ** 2 / (rx ** 2 + 1e-6) + (yy - cy) ** 2 / (ry ** 2 + 1e-6)) <= 1.0
+        soft = np.exp(-(((xx - cx) ** 2) / (2 * (0.45 * rx) ** 2 + 1e-6) + ((yy - cy) ** 2) / (2 * (0.45 * ry) ** 2 + 1e-6)))
+        intensity = np.random.uniform(0.35, 0.8)
+        out = out + (intensity * soft[..., None] * mask[..., None])
+
+    return out
+
+
+def resize_and_to_tensor(image, label, output_size):
+    x, y = image.shape[:2]
+    if x != output_size[0] or y != output_size[1]:
+        if image.ndim == 3:
+            image = zoom(image, (output_size[0] / x, output_size[1] / y, 1), order=3)
+        else:
+            image = zoom(image, (output_size[0] / x, output_size[1] / y), order=3)
+        label = zoom(label, (output_size[0] / x, output_size[1] / y), order=0)
+
+    if image.ndim == 2:
+        image = torch.from_numpy(image.astype(np.float32)).unsqueeze(0)
+    else:
+        image = torch.from_numpy(image.astype(np.float32)).permute(2, 0, 1)
+    label = torch.from_numpy(label.astype(np.float32)).long()
+    return {'image': image, 'label': label}
+
+
 class RandomGenerator(object):
     def __init__(self, output_size):
         self.output_size = output_size
@@ -36,24 +121,27 @@ class RandomGenerator(object):
     def __call__(self, sample):
         image, label = sample['image'], sample['label']
 
-        if random.random() > 0.5:
+        if random.random() < 0.35:
             image, label = random_rot_flip(image, label)
-        elif random.random() > 0.5:
+        if random.random() < 0.25:
             image, label = random_rotate(image, label)
-        x, y = image.shape[:2]
-        if x != self.output_size[0] or y != self.output_size[1]:
-            if image.ndim == 3:
-                image = zoom(image, (self.output_size[0] / x, self.output_size[1] / y, 1), order=3)
-            else:
-                image = zoom(image, (self.output_size[0] / x, self.output_size[1] / y), order=3)
-            label = zoom(label, (self.output_size[0] / x, self.output_size[1] / y), order=0)
-        if image.ndim == 2:
-            image = torch.from_numpy(image.astype(np.float32)).unsqueeze(0)
-        else:
-            image = torch.from_numpy(image.astype(np.float32)).permute(2, 0, 1)
-        label = torch.from_numpy(label.astype(np.float32))
-        sample = {'image': image, 'label': label.long()}
-        return sample
+        if random.random() < 0.30:
+            image, label = random_affine(image, label)
+
+        if random.random() < 0.70:
+            image = random_intensity(image)
+        image = random_specular_reflection(image, p=0.25)
+
+        return resize_and_to_tensor(image, label, self.output_size)
+
+
+class ValGenerator(object):
+    def __init__(self, output_size):
+        self.output_size = output_size
+
+    def __call__(self, sample):
+        image, label = sample['image'], sample['label']
+        return resize_and_to_tensor(image, label, self.output_size)
 
 
 class Synapse_dataset(Dataset):
@@ -75,7 +163,7 @@ class Synapse_dataset(Dataset):
             data = np.load(npz_path)
             try:
                 image, label = data['image'], data['label']
-            except:
+            except Exception:
                 image, label = data['data'], data['seg']
 
             # test path expects an extra singleton channel before volume depth

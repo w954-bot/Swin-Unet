@@ -16,7 +16,7 @@ from utils import DiceLoss
 
 
 def trainer_synapse(args, model, snapshot_path):
-    from datasets.dataset_synapse import Synapse_dataset, RandomGenerator
+    from datasets.dataset_synapse import Synapse_dataset, RandomGenerator, ValGenerator
     logging.basicConfig(filename=snapshot_path + "/log.txt", level=logging.INFO,
                         format='[%(asctime)s.%(msecs)03d] %(message)s', datefmt='%H:%M:%S')
     logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
@@ -30,7 +30,7 @@ def trainer_synapse(args, model, snapshot_path):
                                    [RandomGenerator(output_size=[args.img_size, args.img_size])]))
     db_val = Synapse_dataset(base_dir=args.root_path, list_dir=args.list_dir, split="val",
                              transform=transforms.Compose(
-                                 [RandomGenerator(output_size=[args.img_size, args.img_size])]))
+                                 [ValGenerator(output_size=[args.img_size, args.img_size])]))
     print("The length of train set is: {}".format(len(db_train)))
 
     def worker_init_fn(worker_id):

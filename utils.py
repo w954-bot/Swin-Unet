@@ -67,28 +67,26 @@ def test_single_volume(image, label, net, classes, patch_size=[256, 256], test_s
     while label.ndim > 0 and label.shape[0] == 1:
         label = np.squeeze(label, axis=0)
 
-    # If image is HWC/CHW (channel axis size is small), convert to 2D to match label.
-    if image.ndim == 3 and label.ndim == 2:
-        if image.shape[0] <= 4 and image.shape[1:] == label.shape:
-            image = image[0]
-        elif image.shape[-1] <= 4 and image.shape[:2] == label.shape:
-            image = image[..., 0]
-
-    # If one of image axes is a small channel axis but label is volumetric, drop channel axis.
-    if image.ndim == 3 and label.ndim == 3 and image.shape != label.shape:
-        if image.shape[0] <= 4 and image.shape[1:] == label.shape:
-            image = image[0]
-        elif image.shape[-1] <= 4 and image.shape[:2] == label.shape[:2]:
-            image = image[..., 0]
-
-    if len(image.shape) == 3:
+    if label.ndim == 3:
         prediction = np.zeros_like(label)
-        for ind in range(image.shape[0]):
-            slice = image[ind, :, :]
+        for ind in range(label.shape[0]):
+            if image.ndim == 4 and image.shape[0] == label.shape[0] and image.shape[-1] <= 4:
+                slice = image[ind, :, :, :]
+            else:
+                slice = image[ind, :, :]
+
             x, y = slice.shape[0], slice.shape[1]
             if x != patch_size[0] or y != patch_size[1]:
-                slice = zoom(slice, (patch_size[0] / x, patch_size[1] / y), order=3)  # previous using 0
-            input = torch.from_numpy(slice).unsqueeze(0).unsqueeze(0).float().cuda()
+                if slice.ndim == 3:
+                    slice = zoom(slice, (patch_size[0] / x, patch_size[1] / y, 1), order=3)
+                else:
+                    slice = zoom(slice, (patch_size[0] / x, patch_size[1] / y), order=3)  # previous using 0
+
+            if slice.ndim == 3:
+                input = torch.from_numpy(slice).permute(2, 0, 1).unsqueeze(0).float().cuda()
+            else:
+                input = torch.from_numpy(slice).unsqueeze(0).unsqueeze(0).float().cuda()
+
             net.eval()
             with torch.no_grad():
                 outputs = net(input)
@@ -102,11 +100,18 @@ def test_single_volume(image, label, net, classes, patch_size=[256, 256], test_s
     else:
         x, y = image.shape[0], image.shape[1]
         if x != patch_size[0] or y != patch_size[1]:
-            image_input = zoom(image, (patch_size[0] / x, patch_size[1] / y), order=3)
+            if image.ndim == 3:
+                image_input = zoom(image, (patch_size[0] / x, patch_size[1] / y, 1), order=3)
+            else:
+                image_input = zoom(image, (patch_size[0] / x, patch_size[1] / y), order=3)
         else:
             image_input = image
 
-        input = torch.from_numpy(image_input).unsqueeze(0).unsqueeze(0).float().cuda()
+        if image_input.ndim == 3:
+            input = torch.from_numpy(image_input).permute(2, 0, 1).unsqueeze(0).float().cuda()
+        else:
+            input = torch.from_numpy(image_input).unsqueeze(0).unsqueeze(0).float().cuda()
+
         net.eval()
         with torch.no_grad():
             out = torch.argmax(torch.softmax(net(input), dim=1), dim=1).squeeze(0)
